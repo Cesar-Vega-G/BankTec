@@ -30,13 +30,13 @@
                 
     ;buffer para el saldo
     
-    BUF_SALDO  DB 6         ; parte entera  (0-65535)
+    BUF_SALDO  DB 11         ; parte entera  (0-65535) y decimal
                DB 0
-               DB 6 DUP(0)
+               DB 11 DUP(0)
 
-    BUF_DECIMAL DB 5         ; parte decimal (0-9999)
-                DB 0
-                DB 5 DUP(0)
+    ;BUF_DECIMAL DB 5         ; parte decimal (0-9999)
+                ;DB 0
+               ; DB 5 DUP(0) 
     
     
 
@@ -72,8 +72,25 @@
     MSG_NOM_VACIO   DB 10,13, "Error: el nombre no puede estar vacio.$"
     MSG_GOOD_ID     DB 10,13,  "ID REGISTRADO CON EXITO$"  
     
-    ;mensajes para
+    ;mensajes para consultar saldo
+    MSG_CONSULTAR   DB 10,13, "Inserte ID a consultar: $"  
     
+    MSG_SALDO_LABEL DB 10,13, "Saldo: $"   
+    
+    MSG_PUNTO       DB ".$" 
+    
+    ;mensajes para depositar
+    
+    MSG_DEPOSITAR    DB 10,13, "Inserte ID para depositar: $" 
+    
+    MSG_MONTO        DB 10,13, "Inserte monto a depositar: $"  
+    
+    MSG_OK_DEP       DB 10,13, "Deposito exitoso.$"    
+    
+    MSG_INACTIVA     DB 10,13, "Error: la cuenta esta inactiva.$" 
+    
+    MSG_MONTO_INV    DB 10,13, "Error: el monto debe ser mayor a 0.$"
+        
 .CODE
 MAIN PROC
     MOV AX, @DATA
@@ -96,6 +113,9 @@ MENU_LOOP:
     CMP AL, '2'
     JE  LLAMAR_DEP 
     
+    CMP AL, '4'
+    JE  LLAMAR_CONSULTAR
+    
     CMP AL, '7'
     JE  SALIR
     
@@ -115,7 +135,9 @@ LLAMAR_DEP:
     CALL DEPOSITAR
     JMP MENU_LOOP 
     
-
+LLAMAR_CONSULTAR:
+    CALL CONSULTAR_SALDO
+    JMP MENU_LOOP
 
 
 
@@ -180,9 +202,13 @@ CC_PEDIR_ID:
 
     
 
-    ;falta crear verificador id duplicados
+    PUSH AX                 ; guardamos el ID nuevo antes de que BUSCAR_CUENTA lo use
+    CALL BUSCAR_CUENTA      ; busca si ya existe ese ID
+    POP AX                  ; recuperamos el ID nuevo
+    JNC CC_ID_DUP           
 
-    MOV [BP + OFF_ID], DX   ; guardar ID
+
+    MOV [BP + OFF_ID], AX   ; guardar ID
 
 CC_PEDIR_NOMBRE:
     LEA DI, BUF_NOMBRE  ; DI apunta al inicio de BUF_NOMBRE
@@ -272,8 +298,210 @@ CREAR_CUENTA ENDP
 
 ; --- OPCION 2: DEPOSITAR ---
 DEPOSITAR PROC
-    ; Logica: Pedir ID, llamar a BUSCAR_CUENTA, si existe sumar saldo
+
+;PEDIR ID 
+DEP_PEDIR_ID:
+    LEA DI, BUF_ID
+    MOV CX, 8
+    CALL LIMPIAR_BUFFER
+    MOV BUF_ID, 6
+
+    LEA DX, MSG_DEPOSITAR
+    MOV AH, 09h
+    INT 21h
+    LEA DX, BUF_ID
+    MOV AH, 0Ah
+    INT 21h
+
+    CMP BUF_ID+1, 0
+    JE  DEP_ERROR_ID
+
+    LEA SI, BUF_ID+2
+    MOV CL, BUF_ID+1
+    CALL ASCII_A_BINARIO
+    JC  DEP_ERROR_ID
+
+    CALL BUSCAR_CUENTA
+    JC  DEP_NO_EXISTE
+
+    CMP BYTE PTR [BP + OFF_ESTADO], 1
+    JNE DEP_INACTIVA
+
+;PEDIR MONTO 
+DEP_PEDIR_MONTO:
+    LEA DI, BUF_SALDO
+    MOV CX, 13              ; 1 limite + 1 contador + 11 chars
+    CALL LIMPIAR_BUFFER
+    MOV BUF_SALDO, 11
+
+    LEA DX, MSG_MONTO
+    MOV AH, 09h
+    INT 21h
+    LEA DX, BUF_SALDO
+    MOV AH, 0Ah
+    INT 21h
+
+    CMP BUF_SALDO+1, 0
+    JE  DEP_ERROR_MONTO
+
+;  BUSCAR PUNTO EN EL MONTO 
+    LEA SI, BUF_SALDO+2     ; SI apunta al primer caracter
+    MOV CL, BUF_SALDO+1     ; CL = total de caracteres
+    XOR CH, CH
+    XOR BX, BX              ; BX = contador de chars antes del punto
+
+DEP_BUSCAR_PUNTO:
+    CMP CX, 0
+    JE  DEP_SOLO_ENTERO     ; termino sin ver punto
+
+    MOV AL, [SI]
+    CMP AL, '.'
+    JE  DEP_TIENE_PUNTO
+
+    CMP AL, '0'             ; validar que sea digito
+    JB  DEP_ERROR_MONTO
+    CMP AL, '9'
+    JA  DEP_ERROR_MONTO
+
+    INC BX                  ; un digito entero mas
+    INC SI
+    DEC CX
+    JMP DEP_BUSCAR_PUNTO
+
+; CASO SIN PUNTO
+DEP_SOLO_ENTERO:
+    LEA SI, BUF_SALDO+2
+    MOV CX, BX
+    CALL ASCII_A_BINARIO
+    JC  DEP_ERROR_MONTO
+
+    CMP AX, 0
+    JE  DEP_ERROR_MONTO
+
+    ADD [BP + OFF_SALDO_ENTERO], AX
+    JMP DEP_EXITO
+
+
+DEP_TIENE_PUNTO:
+
+    PUSH SI                 ; guardamos posicion del punto
+    PUSH CX                 ; guardamos chars que quedan
+
+    LEA SI, BUF_SALDO+2     ; volvemos al inicio
+    MOV CX, BX              ; CX = digitos de la parte entera
+
+    CMP CX, 0              
+    JE  DEP_ENTERO_CERO
+
+    CALL ASCII_A_BINARIO
+    JC  DEP_ERROR_MONTO_POP
+    JMP DEP_GUARDAR_ENTERO
+
+DEP_ENTERO_CERO:
+    XOR AX, AX              ; parte entera = 0
+
+DEP_GUARDAR_ENTERO:
+    MOV DI, AX              ; guardamos parte entera en DI
+
+    POP CX                  ; chars que quedan tras el punto
+    POP SI                  ; posicion del punto
+    INC SI                  ; ahora SI apunta al primer decimal
+    DEC CX                  ; ya no contamos el punto
+
+    CMP CX, 0               
+    JE  DEP_ERROR_MONTO
+    CMP CX, 4               ; mas de 4 decimales error
+    JA  DEP_ERROR_MONTO
+
+    PUSH DI                     ; guardamos parte entera
+    PUSH CX                     ; CX ANTES de que ASCII_A_BINARIO lo destruya
+    CALL ASCII_A_BINARIO        ; AX = parte decimal cruda
+    JC  DEP_ERROR_MONTO_POP3    ; nuevo label que limpia 3 valores de la pila
+
+    POP CX                      ; ? recuperamos el CX original
+    ; normalizar a 4 decimales: multiplicar por 10^(4 - CX)
+    MOV BX, 4
+    SUB BX, CX                 ; BX = cuantos ceros faltan
+
+DEP_NORMALIZAR:
+    CMP BX, 0
+    JE  DEP_NORMALIZADO
+
+    PUSH CX
+    XOR DX, DX          ;  limpiar DX antes de MUL
+    MOV CX, 10
+    MUL CX
+    POP CX
+    DEC BX
+    JMP DEP_NORMALIZAR
+    
+DEP_NORMALIZADO:
+    MOV BX, AX                  ; BX = decimal normalizado
+    POP DI                      ; DI = entero nuevo                  ; DI = entero nuevo
+
+    ; 
+    MOV AX, [BP + OFF_DECIMAL]
+    ADD AX, BX              ; sumamos decimales
+
+    CMP AX, 10000           ; si pasa de 9999
+    JB  DEP_SIN_ACARREO
+
+    SUB AX, 10000           ; quitamos el acarreo
+    INC DI                  ; +1 a la parte entera
+
+DEP_SIN_ACARREO:
+    MOV [BP + OFF_DECIMAL], AX
+    ADD [BP + OFF_SALDO_ENTERO], DI
+    JMP DEP_EXITO
+
+DEP_EXITO:
+    LEA DX, MSG_OK_DEP
+    MOV AH, 09h
+    INT 21h
     RET
+
+;  ERRORES
+DEP_ERROR_ID:
+    LEA DX, MSG_ERROR_NUM
+    MOV AH, 09h
+    INT 21h
+    JMP DEP_PEDIR_ID
+
+DEP_NO_EXISTE:
+    LEA DX, MSG_ERR_ID
+    MOV AH, 09h
+    INT 21h
+    RET  
+    
+DEP_ERROR_MONTO_POP3:           ; limpia CX + DI de la pila
+    POP CX
+    POP DI
+    JMP DEP_ERROR_MONTO
+    
+DEP_INACTIVA:
+    LEA DX, MSG_INACTIVA
+    MOV AH, 09h
+    INT 21h
+    RET
+
+DEP_ERROR_MONTO:
+    LEA DX, MSG_MONTO_INV
+    MOV AH, 09h
+    INT 21h
+    JMP DEP_PEDIR_MONTO
+
+; limpian la pila antes de saltar al error
+; porque se hicieron PUSH que quedarian desbalanceados
+DEP_ERROR_MONTO_POP:
+    POP CX
+    POP SI
+    JMP DEP_ERROR_MONTO
+
+DEP_ERROR_MONTO_POP2:
+    POP DI
+    JMP DEP_ERROR_MONTO
+
+
 DEPOSITAR ENDP
 
 
@@ -293,8 +521,68 @@ RETIRAR ENDP
 
 
 
+; opcion 4 consultar saldo (pide el id)
+CONSULTAR_SALDO PROC
+ 
 
+CS_PEDIR_ID:
+    LEA DI, BUF_ID              ; limpiamos el buffer
+    MOV CX, 8
+    CALL LIMPIAR_BUFFER
+    MOV BUF_ID, 6
+ 
+    LEA DX, MSG_CONSULTAR       ; "Inserte ID a consultar:"
+    MOV AH, 09h
+    INT 21h
+ 
+    LEA DX, BUF_ID              ; leemos el ID
+    MOV AH, 0Ah
+    INT 21h
+ 
+    CMP BUF_ID+1, 0             ; 
+    JE  CS_ERROR_NUM
+ 
+    LEA SI, BUF_ID+2            ; convertimos ASCII a numero
+    MOV CL, BUF_ID+1
+    CALL ASCII_A_BINARIO
+    JC  CS_ERROR_NUM            ; si fallo la conversion, error
+ 
 
+    ; AX tiene el ID convertido
+    CALL BUSCAR_CUENTA          ; busca la cuenta, BP apuntara a ella
+    JC  CS_NO_EXISTE            ; CF=1 significa que no se encontro
+ 
+
+    LEA DX, MSG_SALDO_LABEL     ; "Saldo: "
+    MOV AH, 09h
+    INT 21h
+ 
+    MOV AX, [BP + OFF_SALDO_ENTERO]  ; AX = parte entera del saldo
+    CALL IMPRIMIR_AX                 ; imprimimos la parte entera
+ 
+    LEA DX, MSG_PUNTO           ; imprimimos el punto decimal
+    MOV AH, 09h
+    INT 21h
+ 
+    MOV AX, [BP + OFF_DECIMAL]  ; AX = parte decimal
+    CALL IMPRIMIR_DECIMAL            ; imprimimos los decimales
+ 
+    RET
+ 
+
+CS_ERROR_NUM:
+    LEA DX, MSG_ERROR_NUM       ; "Error: ingrese solo numeros"
+    MOV AH, 09h
+    INT 21h
+    JMP CS_PEDIR_ID             ; reintenta
+ 
+CS_NO_EXISTE:
+    LEA DX, MSG_ERR_ID          ; "Error: Cuenta no existe"
+    MOV AH, 09h
+    INT 21h
+    RET
+ 
+CONSULTAR_SALDO ENDP
 
 
 
@@ -315,13 +603,45 @@ MOSTRAR_REPORTE ENDP
 
 
 
+;busqueda lineal de cuentas
 
-; --- UTILITARIO: BÚSQUEDA LINEAL (Obligatorio) ---
-; Entrada: AX = ID buscado
-; Salida: SI = Offset de la cuenta o FFFFh
 BUSCAR_CUENTA PROC
-    ; Recorre el arreglo comparando el ID en [SI + OFF_ID]
+    PUSH CX
+    PUSH SI
+
+    MOV DI, AX                  ; ? GUARDAMOS el ID a buscar en DI
+                                 ;   porque AX puede cambiar en el loop
+
+    XOR SI, SI
+    MOV CL, CONT_CUENTAS
+    XOR CH, CH
+
+    CMP CX, 0
+    JE  BC_NO_ENCONTRADO
+
+BC_LOOP:
+    LEA BP, CUENTAS
+    ADD BP, SI
+
+    MOV AX, [BP + OFF_ID]       ; ? leemos el ID de la cuenta actual en AX
+    CMP AX, DI                  ; ? comparamos con DI (el ID que buscamos)
+    JE  BC_ENCONTRADO
+
+    ADD SI, TAM_REGISTRO
+    LOOP BC_LOOP
+
+BC_NO_ENCONTRADO:
+    STC
+    POP SI
+    POP CX
     RET
+
+BC_ENCONTRADO:
+    CLC
+    POP SI
+    POP CX
+    RET
+
 BUSCAR_CUENTA ENDP
 
 
@@ -399,36 +719,55 @@ ASCII_A_BINARIO ENDP
 
 
 
+;Imprimir numero sen pantalla (parte entera
 
+IMPRIMIR_AX PROC
+    MOV BX, 10                  ; divisor para separar digitos
+    MOV CX, 0                   ; contador de digitos en stack
+ 
+DIVIDE_LOOP:
+    XOR DX, DX                  ; limpiar DX antes de dividir
+    DIV BX                      ; AX = AX/10,  DX = residuo (el digito)
+    ADD DL, '0'                 ; convertir digito a ASCII
+    PUSH DX                     ; guardar digito en stack (al reves)
+    INC CX                      ; contar digito
+    CMP AX, 0
+    JNE DIVIDE_LOOP             ; si AX != 0 seguir dividiendo
+ 
+PRINT_LOOP:
+    POP DX                      ; sacar digitos en orden correcto
+    MOV AH, 02h                 ; funcion imprimir un caracter
+    INT 21h
+    LOOP PRINT_LOOP
+ 
+    RET
+IMPRIMIR_AX ENDP   
 
+;imprimir parte fraccionaria
 
+IMPRIMIR_DECIMAL PROC
+    MOV BX, 10
+    MOV CX, 4               ; siempre imprimimos exactamente 4 digitos
 
-;funcion para imprimir prueba
-; Imprime el valor de AX en pantalla como digitos
-; Entrada: AX = número a imprimir
-;IMPRIMIR_AX PROC
- ;   MOV BX, 10          ; divisor
-  ;  MOV CX, 0           ; contador de dígitos en stack
+IMDEC_DIVIDE:
+    XOR DX, DX
+    DIV BX                  ; AX = AX/10, DX = residuo
+    ADD DL, '0'
+    PUSH DX                 ; guardamos digito (al reves)
+    DEC CX
+    CMP CX, 0
+    JNE IMDEC_DIVIDE        ; repetimos exactamente 4 veces
 
-;DIVIDE_LOOP:
- ;   XOR DX, DX          ; limpiar DX antes de DIV
-  ;  DIV BX              ; AX = AX/10, DX = residuo
-   ; ADD DL, '0'         ; convertir a ASCII
-    ;PUSH DX             ; guardar digito en stack
-    ;INC CX              ; contar digito
-    ;CMP AX, 0
-    ;JNE DIVIDE_LOOP     ; si AX != 0 seguir dividiendo
+    MOV CX, 4               ; ahora imprimimos los 4 digitos
 
-;PRINT_LOOP:
- ;   POP DX              ; sacar digito (en orden correcto)
-  ;  MOV AH, 02h         ; función imprimir char
-   ; INT 21h
-    ;LOOP PRINT_LOOP
+IMDEC_PRINT:
+    POP DX
+    MOV AH, 02h
+    INT 21h
+    LOOP IMDEC_PRINT
 
-    ;RET
-;IMPRIMIR_AX ENDP
-
-
+    RET
+IMPRIMIR_DECIMAL ENDP
 
 
 
