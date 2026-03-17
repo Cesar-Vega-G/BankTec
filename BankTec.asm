@@ -1,16 +1,18 @@
-  ;COMENTARIOS CON AYUDA DE GEMINI
+;COMENTARIOS CON AYUDA DE GEMINI
 .MODEL SMALL
 .STACK 100h
 
 .DATA
                         ;reserva de espacios en memoria 
-    TAM_REGISTRO        EQU 30  
     OFF_ID              EQU 0
     OFF_NOMBRE          EQU 2
-    OFF_SALDO_ENTERO    EQU 22
-    OFF_DECIMAL         EQU 26
-    OFF_ESTADO          EQU 28
-    OFF_PAD             EQU 29;no lo usamos, cuestiones de rendimiento.
+    LEN_NOMBRE          EQU 21
+
+    OFF_SALDO_ENTERO    EQU OFF_NOMBRE + LEN_NOMBRE   ; = 23
+    OFF_DECIMAL         EQU OFF_SALDO_ENTERO + 2      ; = 25
+    OFF_ESTADO          EQU OFF_DECIMAL + 2           ; = 27
+
+    TAM_REGISTRO        EQU OFF_ESTADO + 1            ; = 28
 
     
     CUENTAS      DB 300 DUP(0) ; 10 cuentas * 30 bytes
@@ -20,7 +22,7 @@
     
     BUF_NOMBRE DB 21 ; caracteres maximos
                DB 0  ; cuantos se leyeron para acceder a
-               DB 21 DUP(0) los caracteres 
+               DB 21 DUP(0) ; los caracteres 
                
     ;buffer de id numeros entre 0-65535  
              
@@ -81,9 +83,10 @@
     
     MSG_OK_DEP       DB 10,13, "Deposito exitoso.$"    
     
-    MSG_INACTIVA     DB 10,13, "Error: la cuenta esta inactiva.$" 
+    MSG_INACTIVA     DB 10,13, "Error: la cuenta esta inactiva.$"
     
-    MSG_MONTO_INV    DB 10,13, "Error: el monto debe ser mayor a 0.$"
+    MSG_MONTO_INV    DB 10,13, "Error: el monto debe ser mayor a 0 y menor a 65535 $"
+    MSG_GRANDE       DB 10,13, "Error: el monto debe ser mayor a 0 y menor a 65535 $"
     
     ;Mensajes para retirar  
     
@@ -91,7 +94,29 @@
     
     MSG_MONTO_RETIRAR        DB 10,13, "Inserte monto a retirar: $"  
     
-    MSG_OK_RET       DB 10,13, "Retiro exitoso.$"    
+    MSG_OK_RET       DB 10,13, "Retiro exitoso.$"
+    
+    ; --- VARIABLES PARA EL REPORTE GENERAL (NUEVAS) ---
+    REP_ACTIVAS    DB 0        ; Cuentas con estado = 1
+    REP_INACTIVAS  DB 0        ; Cuentas con estado = 0
+    REP_SUMA_ENT   DW 0        ; Sumatoria de saldos (enteros)
+    REP_SUMA_DEC   DW 0        ; Sumatoria de saldos (decimales)
+    
+    MAX_ENT        DW 0        ; Saldo más alto (entero)
+    MAX_DEC        DW 0        ; Saldo más alto (decimal)
+    MAX_NOM_PTR    DW 0        ; Offset del nombre del titular con más dinero
+    
+    MIN_ENT        DW 0   ; Saldo más bajo (inicializado al máximo)
+    MIN_DEC        DW 0
+    MIN_NOM_PTR    DW 0
+
+    ; Mensajes adicionales para el reporte
+    MSG_REP_TITULO DB 10,13, "--- REPORTE GENERAL BANKTEC ---$"
+    MSG_REP_ACT    DB 10,13, "Cuentas Activas: $"
+    MSG_REP_INA    DB 10,13, "Cuentas Inactivas: $"
+    MSG_REP_TOTAL  DB 10,13, "Saldo Total Banco: $"
+    MSG_REP_MAYOR  DB 10,13, "Mayor Saldo: $"
+    MSG_REP_MENOR  DB 10,13, "Menor Saldo: $"   
         
 .CODE
 MAIN PROC
@@ -106,7 +131,7 @@ MENU_LOOP:
 
     MOV AH, 01h ;Escuchando teclado
     INT 21h ;ejecuta y sigue y lo guarda en Al
-                               
+                                
       
     ;ejemplo de botones
     CMP AL, '1'
@@ -120,6 +145,12 @@ MENU_LOOP:
     
     CMP AL, '4'
     JE  LLAMAR_CONSULTAR
+    
+    CMP AL, '5'
+    JE  LLAMAR_REPORTE_GENERAL
+    
+    ;CMP AL, '6'
+    ;JE  LLAMAR_DESACTIVAR 
     
     CMP AL, '7'
     JE  SALIR
@@ -142,13 +173,17 @@ LLAMAR_CONSULTAR:
     CALL CONSULTAR_SALDO
     JMP MENU_LOOP
 
+LLAMAR_REPORTE_GENERAL:
+    ; CALL REPORTE_GENERAL (Implementar si tienes la proc)
+    JMP MENU_LOOP
+
 SALIR:
     LEA DX, MSG_FIN
     MOV AH, 09h
     INT 21h
     MOV AH, 4Ch
     INT 21h
-MAIN ENDP    
+MAIN ENDP  
 
 ;Funcion para crear cuenta                                ;////////////// Crear cuenta
 CREAR_CUENTA PROC        
@@ -215,8 +250,8 @@ CC_PEDIR_NOMBRE:
 
     LEA DI, [BP + OFF_NOMBRE]      ;DI = DESTINO,BP APUNTA A LA CUENTA NUEVA 
     LEA BX, BUF_NOMBRE+2    ;toma el primer char de ahi 
-           
-    MOV CL, BUF_NOMBRE+1   ;tomamos la cantidad de letras      
+             
+    MOV CL, BUF_NOMBRE+1   ;tomamos la cantidad de letras       
     XOR CH, CH     ;limpiamos el CH por el loop
 
 CC_COPIAR_NOMBRE:
@@ -226,8 +261,11 @@ CC_COPIAR_NOMBRE:
     INC DI
     LOOP CC_COPIAR_NOMBRE
 
-    ; --- saldo en 0 por defecto, no se le pregunta al cliente ---
-    MOV WORD PTR [BP + OFF_SALDO_ENTERO], 0     ;PTR 
+    
+    MOV BYTE PTR [DI], 0
+
+    ; --- saldo en 0 por defecto ---
+    MOV WORD PTR [BP + OFF_SALDO_ENTERO], 0
     MOV WORD PTR [BP + OFF_DECIMAL], 0
 
     ; --- activar cuenta ---
@@ -268,7 +306,7 @@ CC_ERROR_NOMBRE: ;FUNCION DE NOMBRE VACIO
     
 CREAR_CUENTA ENDP
 
-                                                                                             ;///////////////////  Depositar
+                                                                                            ;///////////////////  Depositar
 ; --- OPCION 2: DEPOSITAR ---
 DEPOSITAR PROC
 
@@ -354,10 +392,14 @@ DEP_BUSCAR_PUNTO:
 ; ETAPA 3: CASO DE NUMERO ENTERO (Sin punto decimal)
 ; ==========================================================
 DEP_SOLO_ENTERO:
+    ; --- VALIDACION DE DESBORDAMIENTO (MAX 65535) ---
+    CMP BX, 5               ; Si tiene más de 5 dígitos, AX va a fallar
+    JA  DEP_ERROR_GRANDE
+
     LEA SI, BUF_SALDO+2     ; Volvemos al inicio del texto
     MOV CX, BX              ; CX = numero de digitos enteros
     CALL ASCII_A_BINARIO    ; Convertimos a binario
-    JC  DEP_ERROR_MONTO
+    JC  DEP_ERROR_GRANDE
 
     CMP AX, 0                ; ¿Intento depositar $0?
     JE  DEP_ERROR_MONTO
@@ -373,12 +415,16 @@ DEP_TIENE_PUNTO:
     PUSH CX                 ; Guardamos cuantos caracteres quedan despues del punto
 
     ; --- Procesar Parte Entera Primero ---
+    ; VALIDACION DE DESBORDAMIENTO EN ENTEROS
+    CMP BX, 5
+    JA  DEP_ERROR_MONTO_POP_GRANDE
+
     LEA SI, BUF_SALDO+2     ; Volvemos al inicio del buffer
     MOV CX, BX              ; BX tenia cuantos digitos habia antes del punto
     CMP CX, 0                ; ¿Escribio algo como ".50"?
     JE  DEP_ENTERO_CERO     ; Si es asi, la parte entera es 0
     CALL ASCII_A_BINARIO    ; Convierte la parte entera
-    JC  DEP_ERROR_MONTO_POP
+    JC  DEP_ERROR_MONTO_POP_GRANDE
     JMP DEP_GUARDAR_ENTERO
 
 DEP_ENTERO_CERO:
@@ -474,7 +520,18 @@ DEP_ERROR_MONTO:
     INT 21h
     JMP DEP_PEDIR_MONTO     ; Reintentar
 
+DEP_ERROR_GRANDE:
+    LEA DX, MSG_GRANDE      ; "Monto demasiado grande"
+    MOV AH, 09h
+    INT 21h
+    JMP DEP_PEDIR_MONTO
+
 ; --- Limpiadores de Pila (Stack) ---
+DEP_ERROR_MONTO_POP_GRANDE:
+    POP CX
+    POP SI
+    JMP DEP_ERROR_GRANDE
+
 DEP_ERROR_MONTO_POP3:
     POP CX
     POP DI
@@ -485,7 +542,7 @@ DEP_ERROR_MONTO_POP:
     POP SI
     JMP DEP_ERROR_MONTO
 
-DEPOSITAR ENDP        
+DEPOSITAR ENDP
 
                                                                     ;/////////////////// Retirar
 RETIRAR PROC
@@ -571,21 +628,24 @@ RET_BUSCAR_PUNTO:
 ; ETAPA 3: CASO DE NUMERO ENTERO (Sin punto decimal)
 ; ==========================================================
 RET_SOLO_ENTERO:
+    CMP BX, 5
+    JA  RET_ERROR_GRANDE
+
     LEA SI, BUF_SALDO+2     ; Volvemos al inicio del texto
     MOV CX, BX              ; CX = numero de digitos enteros
     CALL ASCII_A_BINARIO    ; Convertimos a binario
-    JC  RET_ERROR_MONTO
+    JC  RET_ERROR_GRANDE
 
     CMP AX, 0                ; ¿Intento retirar $0?
     JE  RET_ERROR_MONTO
 
     ; --- VALIDACION DE FONDOS ---
     CMP [BP + OFF_SALDO_ENTERO], AX ; Comparamos: ¿Saldo actual < lo que quiere retirar?
-    JB  RET_ERROR_MONTO             ; Si es menor, salta al error
+    JB  RET_ERROR_MONTO              ; Si es menor, salta al error
 
     ; --- OPERACION DE RETIRO ---
     SUB [BP + OFF_SALDO_ENTERO], AX ; Restamos el monto
-    JMP RET_EXITO                   ; Finalizamos con exito
+    JMP RET_EXITO                    ; Finalizamos con exito
 
 ; ==========================================================
 ; ETAPA 4: CASO CON PUNTO DECIMAL
@@ -595,12 +655,15 @@ RET_TIENE_PUNTO:
     PUSH CX                 
 
     ; --- Procesar Parte Entera Primero ---
+    CMP BX, 5
+    JA  RET_ERROR_MONTO_POP_GRANDE
+
     LEA SI, BUF_SALDO+2     
     MOV CX, BX              
     CMP CX, 0                
     JE  RET_ENTERO_CERO     
     CALL ASCII_A_BINARIO    
-    JC  RET_ERROR_MONTO_POP 
+    JC  RET_ERROR_MONTO_POP_GRANDE 
     JMP RET_GUARDAR_ENTERO     
 
 RET_ENTERO_CERO:
@@ -646,28 +709,23 @@ RET_NORMALIZADO:
     POP DI                  ; DI = Parte entera a retirar
 
     ; Revisar fondos combinados
-    ; Primero chequear enteros
     CMP [BP + OFF_SALDO_ENTERO], DI
     JB  RET_ERROR_MONTO
     
-    ; Chequear decimales para ver si ocupamos préstamo
     MOV AX, [BP + OFF_DECIMAL]
     CMP AX, BX
     JAE RET_SIN_PRESTAMO
     
-    ; Ocupamos préstamo del entero
     CMP WORD PTR [BP + OFF_SALDO_ENTERO], 0
-    JE  RET_ERROR_MONTO ; No hay enteros para prestar
+    JE  RET_ERROR_MONTO 
     
-    ; Validar que quitando el prestamo y la parte entera no quede negativo
     MOV AX, [BP + OFF_SALDO_ENTERO]
     SUB AX, DI
     CMP AX, 0
-    JE  RET_VALIDAR_DECIMAL ; Si queda 0, hay que ver si los decimales alcanzan
+    JE  RET_VALIDAR_DECIMAL 
     JMP RET_HACER_PRESTAMO
 
 RET_VALIDAR_DECIMAL:
-    ; Si los enteros quedan en 0 tras retirar DI, solo podemos retirar si decimales >= BX
     MOV AX, [BP + OFF_DECIMAL]
     CMP AX, BX
     JB  RET_ERROR_MONTO
@@ -721,6 +779,17 @@ RET_ERROR_MONTO:
     INT 21h
     JMP RET_PEDIR_MONTO
 
+RET_ERROR_GRANDE:
+    LEA DX, MSG_GRANDE
+    MOV AH, 09h
+    INT 21h
+    JMP RET_PEDIR_MONTO
+
+RET_ERROR_MONTO_POP_GRANDE:
+    POP CX
+    POP SI
+    JMP RET_ERROR_GRANDE
+
 RET_ERROR_MONTO_POP3:
     POP CX
     POP DI
@@ -731,10 +800,10 @@ RET_ERROR_MONTO_POP:
     POP SI
     JMP RET_ERROR_MONTO
 
-RETIRAR ENDP   
+RETIRAR ENDP 
 
 ; opcion 4 consultar saldo (pide el id)
-CONSULTAR_SALDO PROC                                               ;/////////////////// Consular saldo
+CONSULTAR_SALDO PROC                                              ;/////////////////// Consular saldo
  
 
 CS_PEDIR_ID:
@@ -794,10 +863,206 @@ CS_NO_EXISTE:
     INT 21h
     RET
  
-CONSULTAR_SALDO ENDP
+CONSULTAR_SALDO ENDP  
 
-;busqueda lineal de cuentas
-                                                                 ;///////////////////  Buscar cuenta
+
+
+
+LLAMAR_REPORTE_GENERAL PROC                                                         ;//////////////Reporte
+    ; --- 1. LIMPIEZA DE VARIABLES ---
+    MOV REP_ACTIVAS, 0           ; Reinicia contador de cuentas activas
+    MOV REP_INACTIVAS, 0         ; Reinicia contador de cuentas inactivas
+    MOV REP_SUMA_ENT, 0          ; Limpia acumulador de saldos enteros
+    MOV REP_SUMA_DEC, 0          ; Limpia acumulador de saldos decimales
+    
+    MOV MAX_ENT, 0               ; Reinicia parte entera del maximo
+    MOV MAX_DEC, 0               ; Reinicia parte decimal del maximo
+    MOV MAX_NOM_PTR, 0           ; Limpia puntero del nombre maximo
+    
+    MOV MIN_ENT, 0               ; Reinicia parte entera del minimo
+    MOV MIN_DEC, 0               ; Reinicia parte decimal del minimo
+    MOV MIN_NOM_PTR, 0           ; Limpia puntero del nombre minimo
+
+    ; --- 2. VALIDACION DE EXISTENCIA ---
+    CMP CONT_CUENTAS, 0          ; Compara si hay cuentas creadas
+    JNE CONTINUAR_REP            ; Si hay cuentas, continua el proceso
+    LEA DX, MSG_ERR_ID           ; Carga mensaje de error si no hay cuentas
+    MOV AH, 09h                  ; Preparar interrupcion para imprimir
+    INT 21h                      ; Ejecuta la impresion del mensaje
+    RET                          ; Sale del procedimiento si esta vacio
+
+CONTINUAR_REP:
+    ; --- 3. CONFIGURACION DEL BUCLE ---
+    XOR SI, SI                   ; SI sera el indice del registro actual
+    MOV CL, CONT_CUENTAS         ; CL sirve como contador para el LOOP
+    XOR CH, CH                   ; Limpia CH para asegurar CX correcto
+
+RECORRER_CUENTAS:
+    LEA BP, CUENTAS              ; BP apunta al inicio del arreglo
+    ADD BP, SI                   ; Suma el desplazamiento del registro actual
+
+    ; --- 4. FILTRADO POR ESTADO ---
+    MOV AL, [BP + OFF_ESTADO]    ; Obtiene el byte de estado de la cuenta
+    CMP AL, 1                    ; Compara si la cuenta esta activa
+    JE ES_ACTIVA                 ; Si es activa, procesa los saldos
+    INC REP_INACTIVAS            ; Si no, cuenta como inactiva
+    JMP SIGUIENTE_REPORTE        ; Salta al final del bucle
+    
+ES_ACTIVA:
+    INC REP_ACTIVAS              ; Incrementa contador de cuentas activas
+
+    ; --- 5. ACUMULACION DE SALDOS ---
+    MOV AX, [BP + OFF_SALDO_ENTERO] ; Carga parte entera del saldo
+    ADD REP_SUMA_ENT, AX            ; Acumula en el total entero
+    MOV AX, [BP + OFF_DECIMAL]      ; Carga parte decimal del saldo
+    ADD REP_SUMA_DEC, AX            ; Acumula en el total decimal
+    
+    ; --- 6. MANEJO DEL ACARREO ---
+    CMP REP_SUMA_DEC, 10000      ; Verifica si los decimales exceden 9999
+    JB VALIDAR_PRIMERA           ; Si es menor, no hay acarreo
+    SUB REP_SUMA_DEC, 10000      ; Resta 10000 para ajustar decimales
+    INC REP_SUMA_ENT             ; Suma 1 a la parte entera (acarreo)
+
+VALIDAR_PRIMERA:
+    ; --- 7. LOGICA DE PRIMERA CUENTA ACTIVA ---
+    CMP REP_ACTIVAS, 1           ; Revisa si es la primera activa hallada
+    JNE COMPARACIONES_NORMALES   ; Si no es la primera, compara con max/min
+
+    MOV AX, [BP + OFF_SALDO_ENTERO] ; Carga entero actual
+    MOV MAX_ENT, AX              ; Lo establece como maximo inicial
+    MOV MIN_ENT, AX              ; Lo establece como minimo inicial
+    
+    MOV AX, [BP + OFF_DECIMAL]   ; Carga decimal actual
+    MOV MAX_DEC, AX              ; Lo establece como maximo decimal
+    MOV MIN_DEC, AX              ; Lo establece como minimo decimal
+    
+    LEA AX, [BP + OFF_NOMBRE]    ; Obtiene direccion del nombre
+    MOV MAX_NOM_PTR, AX          ; Guarda puntero para nombre maximo
+    MOV MIN_NOM_PTR, AX          ; Guarda puntero para nombre minimo
+    JMP SIGUIENTE_REPORTE        ; Salta a la siguiente iteracion
+
+COMPARACIONES_NORMALES:
+    ; --- 8. BUSQUEDA DEL MAYOR ---
+    MOV AX, [BP + OFF_SALDO_ENTERO] ; Carga entero para comparar
+    CMP AX, MAX_ENT                 ; Compara con el maximo registrado
+    JA ES_NUEVO_MAX                 ; Si es mayor, actualiza maximo
+    JB COMPARAR_MIN                 ; Si es menor, pasa a comparar minimo
+    MOV AX, [BP + OFF_DECIMAL]      ; Si enteros son iguales, carga decimal
+    CMP AX, MAX_DEC                 ; Compara decimal con el maximo decimal
+    JBE COMPARAR_MIN                ; Si decimal no es mayor, va a minimo
+
+ES_NUEVO_MAX:
+    MOV AX, [BP + OFF_SALDO_ENTERO] ; Carga nuevo entero maximo
+    MOV MAX_ENT, AX                 ; Actualiza variable maximo entero
+    MOV AX, [BP + OFF_DECIMAL]      ; Carga nuevo decimal maximo
+    MOV MAX_DEC, AX                 ; Actualiza variable maximo decimal
+    LEA AX, [BP + OFF_NOMBRE]       ; Carga puntero al nombre del maximo
+    MOV MAX_NOM_PTR, AX             ; Actualiza direccion del nombre rico
+
+COMPARAR_MIN:
+    ; --- 9. BUSQUEDA DEL MENOR ---
+    MOV AX, [BP + OFF_SALDO_ENTERO] ; Carga entero para comparar
+    CMP AX, MIN_ENT                 ; Compara con el minimo registrado
+    JB ES_NUEVO_MIN                 ; Si es menor, actualiza minimo
+    JA SIGUIENTE_REPORTE            ; Si es mayor, va a siguiente cuenta
+    MOV AX, [BP + OFF_DECIMAL]      ; Si enteros son iguales, carga decimal
+    CMP AX, MIN_DEC                 ; Compara decimal con el minimo decimal
+    JAE SIGUIENTE_REPORTE           ; Si decimal no es menor, va a siguiente
+
+ES_NUEVO_MIN:
+    MOV AX, [BP + OFF_SALDO_ENTERO] ; Carga nuevo entero minimo
+    MOV MIN_ENT, AX                 ; Actualiza variable minimo entero
+    MOV AX, [BP + OFF_DECIMAL]      ; Carga nuevo decimal minimo
+    MOV MIN_DEC, AX                 ; Actualiza variable minimo decimal
+    LEA AX, [BP + OFF_NOMBRE]       ; Carga puntero al nombre del minimo
+    MOV MIN_NOM_PTR, AX             ; Actualiza direccion del nombre pobre
+
+SIGUIENTE_REPORTE:
+    ADD SI, TAM_REGISTRO            ; Desplaza indice al siguiente registro
+    LOOP RECORRER_CUENTAS           ; CX disminuye y repite si no es cero
+
+    ; ==========================================================
+    ; 11. IMPRESION DE RESULTADOS
+    ; ==========================================================
+    LEA DX, MSG_REP_TITULO       ; Carga titulo del reporte
+    MOV AH, 09h                  ; Preparar impresion
+    INT 21h                      ; Imprimir titulo
+
+    LEA DX, MSG_REP_ACT          ; Carga etiqueta cuentas activas
+    MOV AH, 09h                  ; Preparar impresion
+    INT 21h                      ; Imprimir etiqueta
+    XOR AX, AX                   ; Limpia AX
+    MOV AL, REP_ACTIVAS          ; Carga cantidad de activas
+    CALL IMPRIMIR_AX             ; Llama funcion para mostrar numero
+
+    LEA DX, MSG_REP_INA          ; Carga etiqueta cuentas inactivas
+    MOV AH, 09h                  ; Preparar impresion
+    INT 21h                      ; Imprimir etiqueta
+    XOR AX, AX                   ; Limpia AX
+    MOV AL, REP_INACTIVAS        ; Carga cantidad de inactivas
+    CALL IMPRIMIR_AX             ; Llama funcion para mostrar numero
+
+    LEA DX, MSG_REP_TOTAL        ; Carga etiqueta saldo total
+    MOV AH, 09h                  ; Preparar impresion
+    INT 21h                      ; Imprimir etiqueta
+    MOV AX, REP_SUMA_ENT         ; Carga parte entera del total
+    CALL IMPRIMIR_AX             ; Imprimir parte entera
+    LEA DX, MSG_PUNTO            ; Carga caracter punto decimal
+    MOV AH, 09h                  ; Preparar impresion
+    INT 21h                      ; Imprimir punto
+    MOV AX, REP_SUMA_DEC         ; Carga parte decimal del total
+    CALL IMPRIMIR_DECIMAL        ; Imprimir decimal formateado
+
+    ; --- MAYOR SALDO Y NOMBRE ---
+    LEA DX, MSG_REP_MAYOR        ; Carga etiqueta de mayor saldo
+    MOV AH, 09h                  ; Preparar impresion
+    INT 21h                      ; Imprimir etiqueta
+    MOV AX, MAX_ENT              ; Carga entero maximo
+    CALL IMPRIMIR_AX             ; Imprimir entero
+    LEA DX, MSG_PUNTO            ; Carga caracter punto
+    MOV AH, 09h                  ; Preparar impresion
+    INT 21h                      ; Imprimir punto
+    MOV AX, MAX_DEC              ; Carga decimal maximo
+    CALL IMPRIMIR_DECIMAL        ; Imprimir decimal
+    
+    MOV SI, MAX_NOM_PTR          ; SI apunta al nombre del mas rico
+    CALL IMPRIMIR_NOMBRE_FIX     ; Imprimir nombre con ajuste
+
+    ; --- MENOR SALDO Y NOMBRE ---
+    LEA DX, MSG_REP_MENOR        ; Carga etiqueta de menor saldo
+    MOV AH, 09h                  ; Preparar impresion
+    INT 21h                      ; Imprimir etiqueta
+    MOV AX, MIN_ENT              ; Carga entero minimo
+    CALL IMPRIMIR_AX             ; Imprimir entero
+    LEA DX, MSG_PUNTO            ; Carga caracter punto
+    MOV AH, 09h                  ; Preparar impresion
+    INT 21h                      ; Imprimir punto
+    MOV AX, MIN_DEC              ; Carga decimal minimo
+    CALL IMPRIMIR_DECIMAL        ; Imprimir decimal
+    
+    MOV SI, MIN_NOM_PTR          ; SI apunta al nombre del mas pobre
+    CALL IMPRIMIR_NOMBRE_FIX     ; Imprimir nombre con ajuste
+    RET                          ; Regresa al menu principal
+LLAMAR_REPORTE_GENERAL ENDP
+
+; --- SUBRUTINA PARA IMPRIMIR NOMBRES SIN $ ---
+IMPRIMIR_NOMBRE_FIX PROC
+    MOV AH, 02h                  ; Funcion para imprimir caracter individual
+    MOV DL, ' '                  ; Carga un espacio para separar
+    INT 21h                      ; Imprime el espacio
+    MOV CX, 20                   ; Limite maximo de caracteres del nombre
+LOOP_NOM_FIX:
+    MOV DL, [SI]                 ; Lee caracter apuntado por SI
+    CMP DL, 0                    ; Compara si es fin de cadena (nulo)
+    JE FIN_NOM_FIX               ; Si es nulo, termina impresion
+    INT 21h                      ; Imprime el caracter en pantalla
+    INC SI                       ; Mueve SI al siguiente caracter
+    LOOP LOOP_NOM_FIX            ; Repite hasta CX=0
+FIN_NOM_FIX:
+    RET                          ; Retorna de la subrutina
+IMPRIMIR_NOMBRE_FIX ENDP
+
+;///////////////////  Buscar cuenta
 BUSCAR_CUENTA PROC
     PUSH CX
     PUSH SI
@@ -833,11 +1098,9 @@ BC_ENCONTRADO:
     POP SI
     POP CX
     RET
+BUSCAR_CUENTA ENDP 
 
-BUSCAR_CUENTA ENDP
-
-;FUNCION PARA LIMPIAR BUFFER                                 ;///////////////////  Limpiar buffer
-
+;///////////////////  Limpiar buffer
 LIMPIAR_BUFFER PROC
     PUSH AX             ; guardar AX completo (16 bits)
     PUSH CX             ; guardar CX completo
@@ -856,8 +1119,7 @@ LIMPIAR_LOOP:
     RET
 LIMPIAR_BUFFER ENDP  
 
-;FUNCIONES PARA VERIFICACIONES
-                                                                     ;///////////////////  Verificaciones
+;///////////////////  Verificaciones
 ASCII_A_BINARIO PROC
     XOR AX, AX          ; AX = 0 (resultado acumulado)
     XOR CH, CH          ; CX = cantidad (limpiar CH)
@@ -897,11 +1159,9 @@ CONV_OK:
 CONV_ERROR:
     STC                 ; CF = 1 ? hubo error
     RET
+ASCII_A_BINARIO ENDP
 
-ASCII_A_BINARIO ENDP  
- 
-;Imprimir numeros en pantalla (parte entera)
-                                                                    ;///////////////////  Imprimir enteros
+;///////////////////  Imprimir enteros
 IMPRIMIR_AX PROC
     MOV BX, 10                   ; divisor para separar digitos
     MOV CX, 0                    ; contador de digitos en stack
@@ -922,10 +1182,9 @@ PRINT_LOOP:
     LOOP PRINT_LOOP
  
     RET
-IMPRIMIR_AX ENDP   
+IMPRIMIR_AX ENDP 
 
-;imprimir parte fraccionaria
-                                                              ;///////////////////  Imprimir decimal
+;///////////////////  Imprimir decimal
 IMPRIMIR_DECIMAL PROC
     MOV BX, 10
     MOV CX, 4               ; siempre imprimimos exactamente 4 digitos
@@ -951,7 +1210,6 @@ IMDEC_PRINT:
 IMPRIMIR_DECIMAL ENDP
 
 END MAIN
-
 
 
 
