@@ -4,15 +4,13 @@
 
 .DATA
                         ;reserva de espacios en memoria 
-    OFF_ID              EQU 0
-    OFF_NOMBRE          EQU 2
-    LEN_NOMBRE          EQU 21
-
-    OFF_SALDO_ENTERO    EQU OFF_NOMBRE + LEN_NOMBRE   ; = 23
-    OFF_DECIMAL         EQU OFF_SALDO_ENTERO + 2      ; = 25
-    OFF_ESTADO          EQU OFF_DECIMAL + 2           ; = 27
-
-    TAM_REGISTRO        EQU OFF_ESTADO + 1            ; = 28
+   ; Estructura de cada registro (Total: 28 bytes) [cite: 24]
+    OFF_ID              EQU 0       ; ID de la cuenta (2 bytes) [cite: 25]
+    OFF_NOMBRE          EQU 2       ; Nombre (21 bytes) [cite: 26]
+    OFF_SALDO_ENTERO    EQU 23      ; Parte entera (2 bytes) [cite: 27]
+    OFF_DECIMAL         EQU 25      ; Parte decimal (2 bytes) [cite: 27]
+    OFF_ESTADO          EQU 27      ; Estado (1 byte: 1=Activa, 0=Inactiva) [cite: 28]
+    TAM_REGISTRO        EQU 28
 
     
     CUENTAS      DB 300 DUP(0) ; 10 cuentas * 30 bytes
@@ -174,7 +172,7 @@ LLAMAR_CONSULTAR:
     JMP MENU_LOOP
 
 LLAMAR_REPORTE_GENERAL:
-    ; CALL REPORTE_GENERAL (Implementar si tienes la proc)
+    CALL REPORTE_GENERAL 
     JMP MENU_LOOP
 
 SALIR:
@@ -866,9 +864,7 @@ CS_NO_EXISTE:
 CONSULTAR_SALDO ENDP  
 
 
-
-
-LLAMAR_REPORTE_GENERAL PROC                                                         ;//////////////Reporte
+REPORTE_GENERAL PROC                                                         ;//////////////Reporte
     ; --- 1. LIMPIEZA DE VARIABLES ---
     MOV REP_ACTIVAS, 0           ; Reinicia contador de cuentas activas
     MOV REP_INACTIVAS, 0         ; Reinicia contador de cuentas inactivas
@@ -1043,7 +1039,7 @@ SIGUIENTE_REPORTE:
     MOV SI, MIN_NOM_PTR          ; SI apunta al nombre del mas pobre
     CALL IMPRIMIR_NOMBRE_FIX     ; Imprimir nombre con ajuste
     RET                          ; Regresa al menu principal
-LLAMAR_REPORTE_GENERAL ENDP
+REPORTE_GENERAL ENDP
 
 ; --- SUBRUTINA PARA IMPRIMIR NOMBRES SIN $ ---
 IMPRIMIR_NOMBRE_FIX PROC
