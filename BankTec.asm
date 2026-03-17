@@ -115,6 +115,12 @@
     MSG_REP_TOTAL  DB 10,13, "Saldo Total Banco: $"
     MSG_REP_MAYOR  DB 10,13, "Mayor Saldo: $"
     MSG_REP_MENOR  DB 10,13, "Menor Saldo: $"   
+    
+    ;variable temporal para BP en crear cuenta
+    TEMP_BP DW 0
+    
+    
+    
         
 .CODE
 MAIN PROC
@@ -221,10 +227,12 @@ CC_PEDIR_ID:
     MOV CL, BUF_ID+1
     CALL ASCII_A_BINARIO
     JC  CC_ERROR_NUM
-
+    
+    MOV TEMP_BP,BP ;variable temporal que ayuda a mantener el bp original
     PUSH AX                 ; guardamos el ID nuevo antes de que BUSCAR_CUENTA lo use
     CALL BUSCAR_CUENTA      ; busca si ya existe ese ID
     POP AX                  ; recuperamos el ID nuevo
+    MOV BP, TEMP_BP
     JNC CC_ID_DUP           
 
 
