@@ -116,6 +116,12 @@
     MSG_REP_MAYOR  DB 10,13, "Mayor Saldo: $"
     MSG_REP_MENOR  DB 10,13, "Menor Saldo: $"   
     
+    ;mensajes para desactivar cuenta 
+    MSG_DES_ID      DB 10,13, "Inserte ID a desactivar: $"
+    MSG_OK_DES      DB 10,13, "Cuenta desactivada exitosamente.$"
+    MSG_YA_INACTIVA DB 10,13, "Error: la cuenta ya esta inactiva.$"
+    
+    
     ;variable temporal para BP en crear cuenta
     TEMP_BP DW 0
     
@@ -153,8 +159,8 @@ MENU_LOOP:
     CMP AL, '5'
     JE  LLAMAR_REPORTE_GENERAL
     
-    ;CMP AL, '6'
-    ;JE  LLAMAR_DESACTIVAR 
+    CMP AL, '6'
+    JE  LLAMAR_DESACTIVAR 
     
     CMP AL, '7'
     JE  SALIR
@@ -180,6 +186,10 @@ LLAMAR_CONSULTAR:
 LLAMAR_REPORTE_GENERAL:
     CALL REPORTE_GENERAL 
     JMP MENU_LOOP
+LLAMAR_DESACTIVAR:
+    CALL DESACTIVAR
+    JMP MENU_LOOP
+
 
 SALIR:
     LEA DX, MSG_FIN
@@ -232,7 +242,7 @@ CC_PEDIR_ID:
     PUSH AX                 ; guardamos el ID nuevo antes de que BUSCAR_CUENTA lo use
     CALL BUSCAR_CUENTA      ; busca si ya existe ese ID
     POP AX                  ; recuperamos el ID nuevo
-    MOV BP, TEMP_BP
+    MOV BP, TEMP_BP         ; volvemos a restablecer BP para su funcionamiento
     JNC CC_ID_DUP           
 
 
@@ -1048,6 +1058,79 @@ SIGUIENTE_REPORTE:
     CALL IMPRIMIR_NOMBRE_FIX     ; Imprimir nombre con ajuste
     RET                          ; Regresa al menu principal
 REPORTE_GENERAL ENDP
+
+;desactivar cuenta 
+DESACTIVAR PROC
+
+DES_PEDIR_ID:
+    LEA DI, BUF_ID          ; apuntamos al buffer de ID para limpiarlo
+    MOV CX, 8               ; tamaño del buffer
+    CALL LIMPIAR_BUFFER     ; borramos basura de entradas previas
+    MOV BUF_ID, 6           ; definimos maximo de 6 caracteres para el ID
+
+    LEA DX, MSG_DES_ID      ; "Inserte ID a desactivar:"
+    MOV AH, 09h             ; funcion para imprimir cadena
+    INT 21h
+
+    LEA DX, BUF_ID          ; DX apunta al buffer donde se guardara lo escrito
+    MOV AH, 0Ah             ; funcion para leer cadena del teclado
+    INT 21h
+
+    CMP BUF_ID+1, 0         ; ¿el usuario presiono Enter sin escribir nada?
+    JE  DES_ERROR_ID        ; si esta vacio, saltamos al error
+
+    ; --- Conversion de ID (Texto -> Binario) ---
+    LEA SI, BUF_ID+2        ; SI apunta al inicio del texto
+    MOV CL, BUF_ID+1        ; CL = cantidad de caracteres escritos
+    CALL ASCII_A_BINARIO    ; transforma "123" en el numero 123 en AX
+    JC  DES_ERROR_ID        ; si la conversion fallo, error
+
+    ; --- Localizacion de la cuenta en Memoria ---
+    CALL BUSCAR_CUENTA      ; busca la cuenta, si la halla BP apunta a ella
+    JC  DES_NO_EXISTE       ; CF=1 significa que no se encontro
+
+    ; --- Validacion: ya esta inactiva? ---
+    CMP BYTE PTR [BP + OFF_ESTADO], 0   ; ¿el byte de estado ya es 0?
+    JE  DES_YA_INACTIVA                 ; si ya es 0, no hay nada que hacer
+
+    ; --- Operacion principal: cambiar estado a 0 ---
+    MOV BYTE PTR [BP + OFF_ESTADO], 0   ; escribimos 0 en el byte de estado
+                                         ; esto desactiva la cuenta
+
+    LEA DX, MSG_OK_DES      ; "Cuenta desactivada exitosamente"
+    MOV AH, 09h
+    INT 21h
+    RET
+
+; --- Manejo de errores ---
+DES_ERROR_ID:
+    LEA DX, MSG_ERROR_NUM   ; "Error: ingrese solo numeros"
+    MOV AH, 09h
+    INT 21h
+    JMP DES_PEDIR_ID        ; reintenta
+
+DES_NO_EXISTE:
+    LEA DX, MSG_ERR_ID      ; "Error: Cuenta no existe"
+    MOV AH, 09h
+    INT 21h
+    RET
+
+DES_YA_INACTIVA:
+    LEA DX, MSG_YA_INACTIVA ; "Error: la cuenta ya esta inactiva"
+    MOV AH, 09h
+    INT 21h
+    RET
+
+DESACTIVAR ENDP
+
+
+
+
+
+
+
+
+
 
 ; --- SUBRUTINA PARA IMPRIMIR NOMBRES SIN $ ---
 IMPRIMIR_NOMBRE_FIX PROC
