@@ -84,6 +84,9 @@
     MSG_INACTIVA     DB 10,13, "Error: la cuenta esta inactiva.$"
     
     MSG_MONTO_INV    DB 10,13, "Error: el monto debe ser mayor a 0 y menor a 65535 $"
+    
+    MSG_LIMITE      DB 10,13, "Error: el deposito superaria el limite de 65535.$"
+    
     MSG_GRANDE       DB 10,13, "Error: el monto debe ser mayor a 0 y menor a 65535 $"
     
     ;Mensajes para retirar  
@@ -97,7 +100,8 @@
     ; --- VARIABLES PARA EL REPORTE GENERAL (NUEVAS) ---
     REP_ACTIVAS    DB 0        ; Cuentas con estado = 1
     REP_INACTIVAS  DB 0        ; Cuentas con estado = 0
-    REP_SUMA_ENT   DW 0        ; Sumatoria de saldos (enteros)
+    REP_SUMA_LO    DW 0        ; parte baja del total entero
+    REP_SUMA_HI    DW 0        ; parte alta del total entero (desbordamientos)
     REP_SUMA_DEC   DW 0        ; Sumatoria de saldos (decimales)
     
     MAX_ENT        DW 0        ; Saldo más alto (entero)
@@ -408,8 +412,7 @@ DEP_BUSCAR_PUNTO:
 ; ETAPA 3: CASO DE NUMERO ENTERO (Sin punto decimal)
 ; ==========================================================
 DEP_SOLO_ENTERO:
-    ; --- VALIDACION DE DESBORDAMIENTO (MAX 65535) ---
-    CMP BX, 5               ; Si tiene más de 5 dígitos, AX va a fallar
+    CMP BX, 5
     JA  DEP_ERROR_GRANDE
 
     LEA SI, BUF_SALDO+2     ; Volvemos al inicio del texto
@@ -417,11 +420,19 @@ DEP_SOLO_ENTERO:
     CALL ASCII_A_BINARIO    ; Convertimos a binario
     JC  DEP_ERROR_GRANDE
 
-    CMP AX, 0                ; ¿Intento depositar $0?
+    CMP AX, 0               ; Intento depositar $0?
     JE  DEP_ERROR_MONTO
 
-    ADD [BP + OFF_SALDO_ENTERO], AX ; Sumamos directamente al saldo de la cuenta
-    JMP DEP_EXITO           ; Finalizamos
+    ; validar que saldo actual + monto no supere 65535
+    ; se hace sumando ambos y verificando el Carry Flag
+    ; si ADD genera carry significa que el resultado supero 65535
+    MOV BX, AX                       ; BX = monto a depositar
+    MOV AX, [BP + OFF_SALDO_ENTERO]  ; AX = saldo actual de la cuenta
+    ADD AX, BX                       ; AX = saldo + monto
+    JC  DEP_ERROR_LIMITE             ; si hubo carry, supero el limite
+
+    MOV [BP + OFF_SALDO_ENTERO], AX  ; guardar resultado final en la cuenta
+    JMP DEP_EXITO
 
 ; ==========================================================
 ; ETAPA 4: CASO CON PUNTO DECIMAL
@@ -488,19 +499,31 @@ DEP_NORMALIZADO:
     MOV BX, AX              ; BX = Decimal ya normalizado (ej: 5000)
     POP DI                  ; DI = Parte entera guardada
 
-    ; --- Sumar Decimales al Saldo ---
-    MOV AX, [BP + OFF_DECIMAL] ; Trae los decimales actuales de la cuenta
-    ADD AX, BX                   ; Suma los decimales nuevos
+    ; guardar el decimal original en el stack por si la validacion
+    ; falla despues de calcularlo, para no dejar el saldo corrupto
+    MOV AX, [BP + OFF_DECIMAL] ; trae decimales actuales de la cuenta
+    PUSH AX                    ; respaldo del decimal original
 
-    CMP AX, 10000              ; ¿La suma paso de 9999 (se convirtio en 1 peso)?
-    JB  DEP_SIN_ACARREO        ; Si es menor a 10000, no hay acarreo
+    ADD AX, BX              ; Suma los decimales nuevos
 
-    SUB AX, 10000              ; Le quitamos el exceso de 10000
-    INC DI                       ; Sumamos 1 a la parte entera (Acarreo)
+    CMP AX, 10000           ; La suma paso de 9999?
+    JB  DEP_SIN_ACARREO     ; Si es menor a 10000, no hay acarreo
+
+    SUB AX, 10000           ; Le quitamos el exceso de 10000
+    INC DI                  ; Sumamos 1 a la parte entera (Acarreo)
+
 
 DEP_SIN_ACARREO:
-    MOV [BP + OFF_DECIMAL], AX       ; Guardamos decimales finales
-    ADD [BP + OFF_SALDO_ENTERO], DI  ; Sumamos la parte entera al saldo
+    ; validar que saldo entero + parte entera del deposito no supere 65535
+    ; DI tiene la parte entera del deposito mas el posible acarreo decimal
+    MOV BX, [BP + OFF_SALDO_ENTERO]  ; BX = saldo entero actual
+    ADD BX, DI                        ; BX = saldo + parte entera deposito
+    JC  DEP_ERROR_LIMITE_POP         ; si hubo carry, supero el limite
+
+    ; paso la validacion, guardar ambos valores en la cuenta
+    MOV [BP + OFF_DECIMAL], AX        ; guardar decimales finales
+    MOV [BP + OFF_SALDO_ENTERO], BX   ; guardar entero final
+    POP AX                            ; limpiar el respaldo del stack
     JMP DEP_EXITO
 
 ; ==========================================================
@@ -556,8 +579,25 @@ DEP_ERROR_MONTO_POP3:
 DEP_ERROR_MONTO_POP:
     POP CX
     POP SI
-    JMP DEP_ERROR_MONTO
-
+    JMP DEP_ERROR_MONTO 
+    
+DEP_ERROR_LIMITE:
+    ; este manejador es para el caso entero puro
+    ; no necesita limpiar stack porque DEP_SOLO_ENTERO no hizo PUSH
+    LEA DX, MSG_LIMITE
+    MOV AH, 09h
+    INT 21h
+    JMP DEP_PEDIR_MONTO    
+    
+    
+DEP_ERROR_LIMITE_POP:
+    ; limpiar el stack antes de salir porque se hizo PUSH del decimal
+    ; si no se limpia el stack quedaria desbalanceado y el RET fallaria
+    POP AX                            ; descarta el respaldo sin usarlo
+    LEA DX, MSG_LIMITE               ; mensaje de error de limite
+    MOV AH, 09h
+    INT 21h
+    JMP DEP_PEDIR_MONTO
 DEPOSITAR ENDP
 
                                                                     ;/////////////////// Retirar
@@ -882,11 +922,12 @@ CS_NO_EXISTE:
 CONSULTAR_SALDO ENDP  
 
 
-REPORTE_GENERAL PROC                                                         ;//////////////Reporte
+REPORTE_GENERAL PROC
     ; --- 1. LIMPIEZA DE VARIABLES ---
     MOV REP_ACTIVAS, 0           ; Reinicia contador de cuentas activas
     MOV REP_INACTIVAS, 0         ; Reinicia contador de cuentas inactivas
-    MOV REP_SUMA_ENT, 0          ; Limpia acumulador de saldos enteros
+    MOV REP_SUMA_LO, 0           ; Limpia parte baja del acumulador de 32 bits
+    MOV REP_SUMA_HI, 0           ; Limpia parte alta del acumulador de 32 bits
     MOV REP_SUMA_DEC, 0          ; Limpia acumulador de saldos decimales
     
     MOV MAX_ENT, 0               ; Reinicia parte entera del maximo
@@ -925,17 +966,33 @@ RECORRER_CUENTAS:
 ES_ACTIVA:
     INC REP_ACTIVAS              ; Incrementa contador de cuentas activas
 
-    ; --- 5. ACUMULACION DE SALDOS ---
+    ; --- 5. ACUMULACION DE SALDOS DE 32 BITS ---
+    ; se usa BX como registro intermedio porque ADD directo
+    ; memoria-memoria no existe en 8086, y necesitamos
+    ; que el Carry Flag quede limpio para el JNC siguiente
     MOV AX, [BP + OFF_SALDO_ENTERO] ; Carga parte entera del saldo
-    ADD REP_SUMA_ENT, AX            ; Acumula en el total entero
+    MOV BX, REP_SUMA_LO              ; Trae parte baja del acumulador a registro
+    ADD BX, AX                       ; Suma saldo actual, CF se activa si supera 65535
+    MOV REP_SUMA_LO, BX              ; Guarda resultado en parte baja
+    JNC ACUM_DEC                     ; Si no hubo desbordamiento, saltar
+    INC REP_SUMA_HI                  ; Si hubo carry, incrementar parte alta
+
+ACUM_DEC:
+    ; --- acumulacion decimal ---
     MOV AX, [BP + OFF_DECIMAL]      ; Carga parte decimal del saldo
     ADD REP_SUMA_DEC, AX            ; Acumula en el total decimal
     
-    ; --- 6. MANEJO DEL ACARREO ---
+    ; --- 6. MANEJO DEL ACARREO DECIMAL ---
     CMP REP_SUMA_DEC, 10000      ; Verifica si los decimales exceden 9999
     JB VALIDAR_PRIMERA           ; Si es menor, no hay acarreo
     SUB REP_SUMA_DEC, 10000      ; Resta 10000 para ajustar decimales
-    INC REP_SUMA_ENT             ; Suma 1 a la parte entera (acarreo)
+    ; sumar 1 al acumulador de 32 bits por el acarreo decimal
+    ; igual que antes: BX intermedio para detectar carry correctamente
+    MOV BX, REP_SUMA_LO
+    ADD BX, 1                    ; Suma 1 a la parte baja
+    MOV REP_SUMA_LO, BX
+    JNC VALIDAR_PRIMERA          ; Si no hubo carry, continuar
+    INC REP_SUMA_HI              ; Si BX dio vuelta a 0, propagar a parte alta
 
 VALIDAR_PRIMERA:
     ; --- 7. LOGICA DE PRIMERA CUENTA ACTIVA ---
@@ -1019,8 +1076,10 @@ SIGUIENTE_REPORTE:
     LEA DX, MSG_REP_TOTAL        ; Carga etiqueta saldo total
     MOV AH, 09h                  ; Preparar impresion
     INT 21h                      ; Imprimir etiqueta
-    MOV AX, REP_SUMA_ENT         ; Carga parte entera del total
-    CALL IMPRIMIR_AX             ; Imprimir parte entera
+    ; llamar rutina especial que imprime el numero de 32 bits
+    ; HI:LO correctamente sin perder digitos
+    CALL IMPRIMIR_32BITS         ; Imprime saldo total mayor a 65535
+
     LEA DX, MSG_PUNTO            ; Carga caracter punto decimal
     MOV AH, 09h                  ; Preparar impresion
     INT 21h                      ; Imprimir punto
@@ -1121,9 +1180,68 @@ DES_YA_INACTIVA:
     INT 21h
     RET
 
-DESACTIVAR ENDP
+DESACTIVAR ENDP  
 
 
+
+;funcion para imprimir reporte del banco
+
+
+IMPRIMIR_32BITS PROC
+    ; si la parte alta es 0, el numero cabe en 16 bits
+    ; se imprime directo con IMPRIMIR_AX para no complicar
+    MOV AX, REP_SUMA_HI
+    CMP AX, 0
+    JE  I32_SOLO_LO              ; saltar al caso simple
+
+    MOV CX, 0                    ; contador de digitos guardados en stack
+
+I32_LOOP:
+    ; verificar si el numero completo ya es 0 (HI y LO en 0)
+    MOV AX, REP_SUMA_HI
+    OR  AX, REP_SUMA_LO          ; OR entre ambas partes
+    JZ  I32_PRINT                ; si resultado es 0, ya no hay mas digitos
+
+    ; --- division de 32 bits entre 10 en dos pasos ---
+
+    ; paso 1: dividir la parte alta entre 10
+    ; DX debe ser 0 porque es division de 16 bits
+    XOR DX, DX
+    MOV AX, REP_SUMA_HI
+    MOV BX, 10
+    DIV BX                       ; AX = nuevo HI, DX = resto de la parte alta
+    MOV REP_SUMA_HI, AX          ; guardar nuevo HI
+
+    ; paso 2: dividir (resto:LO) entre 10
+    ; DX ya tiene el resto del paso 1, que actua como extension alta
+    ; esto es exactamente una division DX:AX de 32 bits
+    MOV AX, REP_SUMA_LO
+    DIV BX                       ; AX = nuevo LO, DX = digito final
+    MOV REP_SUMA_LO, AX          ; guardar nuevo LO
+
+    ADD DL, '0'                  ; convertir digito a ASCII
+    PUSH DX                      ; guardar digito en stack (quedan al reves)
+    INC CX                       ; contar digito
+    JMP I32_LOOP
+
+I32_PRINT:
+    ; sacar digitos del stack en orden correcto e imprimirlos
+    CMP CX, 0
+    JE  I32_FIN
+    POP DX                       ; sacar digito en orden correcto
+    MOV AH, 02h                  ; funcion imprimir caracter
+    INT 21h
+    LOOP I32_PRINT
+    JMP I32_FIN
+
+I32_SOLO_LO:
+    ; caso simple: HI es 0, el total cabe en 16 bits
+    MOV AX, REP_SUMA_LO
+    CALL IMPRIMIR_AX             ; reutilizar rutina existente
+
+I32_FIN:
+    RET
+IMPRIMIR_32BITS ENDP
 
 
 
